@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -162,18 +161,27 @@ func (t tableCopier) writeBatch(ctx context.Context, items []map[string]types.At
 		})
 	}
 
-	batchWriteInput := &dynamodb.BatchWriteItemInput{
-		RequestItems: map[string][]types.WriteRequest{t.dest: writeRequests},
-	}
+	const maxAttempts = 4
 
-	batchWriteOutput, err := t.ddbClient.BatchWriteItem(ctx, batchWriteInput)
-	if err != nil {
-		return err
-	}
+	for attempt := 0; attempt < maxAttempts; attempt += 1 {
+		batchWriteInput := &dynamodb.BatchWriteItemInput{
+			RequestItems: map[string][]types.WriteRequest{t.dest: writeRequests},
+		}
 
-	// Check if there are any unprocessed items
-	if len(batchWriteOutput.UnprocessedItems) > 0 {
-		return errors.New(fmt.Sprintf("unprocessed items found: %v", batchWriteOutput.UnprocessedItems))
+		batchWriteOutput, err := t.ddbClient.BatchWriteItem(ctx, batchWriteInput)
+		if err != nil {
+			return err
+		}
+
+		unprocessedItems, hasUnprocessedItems := batchWriteOutput.UnprocessedItems[t.dest]
+		if !hasUnprocessedItems || len(unprocessedItems) == 0 {
+			break
+		}
+
+		if attempt == maxAttempts {
+			return fmt.Errorf("failed to process items: %v", unprocessedItems)
+		}
+		writeRequests = unprocessedItems
 	}
 
 	return nil
